@@ -1,3 +1,4 @@
 Quill 2.0.3: https://registry.npmjs.org/quill/2.0.3 (BSD-3-Clause)
 Noto Serif SC 5.3.1: https://registry.npmjs.org/@fontsource/noto-serif-sc/5.3.1 (SIL OFL)
 Tarballs verified against npm registry SHA-512 integrity. Only regular 400 WOFF2 font subsets included.
+KaTeX 0.16.22: https://registry.npmjs.org/katex/0.16.22 (MIT; license in katex/LICENSE). JS, CSS and WOFF2 fonts vendored for offline formula rendering. Tarball verified against npm registry SHA-512 integrity.

@@ -2,7 +2,7 @@
 from html import escape
 from html.parser import HTMLParser
 import json, re
-ALLOWED={'p','br','h1','h2','h3','h4','strong','b','em','i','u','s','blockquote','pre','code','ul','ol','li','a','img','video','audio','hr','span','div','sub','sup'}
+ALLOWED={'p','br','h1','h2','h3','h4','strong','b','em','i','u','s','blockquote','pre','code','ul','ol','li','a','img','video','audio','hr','span','div','sub','sup','table','thead','tbody','tfoot','tr','td','th','caption'}
 VOID={'br','img','hr'}
 BLOCKED={'script','style','iframe','object','embed','svg','math','template'}
 CLASS=re.compile(r'ql-(?:align-(?:center|right|justify)|indent-[1-8]|font-(?:serif|sans|monospace)|size-(?:small|large|huge)|direction-rtl|syntax)\Z')
@@ -44,6 +44,16 @@ class Cleaner(HTMLParser):
                 clean.extend([('href',href),('target','_blank'),('rel','noopener noreferrer')])
             elif MEDIA.fullmatch(href):
                 clean.append(('href',href));self.media.append(MEDIA.fullmatch(href)[1])
+        if tag in ('td','th'):
+            for name in ('colspan','rowspan'):
+                value=attrs.get(name,'')
+                if re.fullmatch(r'[1-9]\d?',value):clean.append((name,value))
+            row=attrs.get('data-row','')
+            if re.fullmatch(r'[a-zA-Z0-9-]{1,80}',row):clean.append(('data-row',row))
+        if tag=='div' and 'blog-formula' in attrs.get('class','').split():
+            source=attrs.get('data-formula','')
+            if 0<len(source)<=8000:
+                clean.extend([('class','blog-formula'),('data-formula',source)])
         classes=' '.join(x for x in attrs.get('class','').split() if CLASS.fullmatch(x))
         if classes:clean.append(('class',classes))
         style=safe_style(attrs.get('style',''))
