@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Portable Blog: standard-library-only local publishing."""
 import base64, hashlib, hmac, io, json, mimetypes, os, re, secrets, shutil, sqlite3, sys, threading, time, urllib.parse, webbrowser, zipfile
+from datetime import datetime
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from richtext import sanitize, typography
@@ -27,6 +28,12 @@ CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY,name TEXT NOT NULL,file TEX
             columns={r[1] for r in c.execute('PRAGMA table_info('+table+')')}
             if 'format' not in columns: c.execute("ALTER TABLE "+table+" ADD COLUMN format TEXT NOT NULL DEFAULT 'plain'")
             if 'typography' not in columns: c.execute("ALTER TABLE "+table+" ADD COLUMN typography TEXT NOT NULL DEFAULT '{}'")
+        columns={r[1] for r in c.execute('PRAGMA table_info(posts)')}
+        if 'published_at' not in columns:
+            c.execute("ALTER TABLE posts ADD COLUMN published_at TEXT NOT NULL DEFAULT ''")
+            c.execute("UPDATE posts SET published_at=created")
+        if 'tags' not in columns:c.execute("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+        c.execute('CREATE TABLE IF NOT EXISTS tags(name TEXT PRIMARY KEY)')
         defaults={'title':'我的私人博客','subtitle':'欢迎来到我的小小宇宙。','accent':'#111111','background':'#ffffff','categories':['生活记录','学习笔记','旅行'],'menus':[{'label':'Home','target':'home'},{'label':'About','target':'page:about'},{'label':'Blog','target':'blog'},{'label':'Contact','target':'page:contact'},{'label':'旅行','target':'category:旅行'}], 'blog_heading':'欢迎来玩。','footer_text':'记录生活，收藏时光。','page_size':9}
         for k,v in defaults.items(): c.execute('INSERT OR IGNORE INTO settings VALUES (?,?)',(k,json.dumps(v,ensure_ascii=False)))
         if not c.execute("SELECT 1 FROM settings WHERE key='_pages_initialized'").fetchone():
@@ -46,6 +53,25 @@ def setting(k,default=None):
         row=c.execute('SELECT value FROM settings WHERE key=?',(k,)).fetchone()
         return json.loads(row[0]) if row else default
 def save_setting(c,k,v): c.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',(k,json.dumps(v,ensure_ascii=False)))
+def clean_tags(value):
+    if not isinstance(value,list) or len(value)>20:raise ValueError('每篇文章最多 20 个标签')
+    result=[]
+    for item in value:
+        if not isinstance(item,str):raise ValueError('标签必须是文字')
+        item=item.strip()
+        if not 1<=len(item)<=40 or any(ord(ch)<32 or ord(ch)==127 for ch in item):raise ValueError('标签需为 1 至 40 个字，不能包含控制字符')
+        if item not in result:result.append(item)
+    return result
+
+def publication_time(value):
+    if not isinstance(value,str):raise ValueError('发布时间格式不正确')
+    value=value.replace('T',' ')
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}',value):value+=':00'
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}',value):raise ValueError('请填写有效的发布时间')
+    try:datetime.strptime(value,'%Y-%m-%d %H:%M:%S')
+    except ValueError:raise ValueError('请填写有效的发布时间') from None
+    return value
+
 def now(): return time.strftime('%Y-%m-%d %H:%M:%S')
 def password_hash(p,salt): return hashlib.scrypt(p.encode(),salt=bytes.fromhex(salt),n=16384,r=8,p=1).hex()
 class Server(ThreadingHTTPServer):
@@ -88,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/state':
             with connect() as c:
                 settings={r['key']:json.loads(r['value']) for r in c.execute('SELECT * FROM settings') if r['key']!='password' and not r['key'].startswith('_')}
-                posts=[dict(r) for r in c.execute('SELECT * FROM posts ORDER BY created DESC') if self.auth() or r['status']=='published']
+                posts=[dict(r) for r in c.execute('SELECT * FROM posts ORDER BY published_at DESC,created DESC,id') if self.auth() or r['status']=='published']
                 pages=[dict(r) for r in c.execute('SELECT * FROM pages ORDER BY slug') if self.auth() or r['status']=='published']
                 media=[dict(r) for r in c.execute('SELECT * FROM media ORDER BY created DESC')]
                 if not self.auth():
@@ -97,7 +123,11 @@ class Handler(BaseHTTPRequestHandler):
             for p in posts+pages:
                 p['attachments']=json.loads(p['attachments'])
                 p['typography']=json.loads(p['typography'])
-            return self.respond(200,{'settings':settings,'posts':posts,'pages':pages,'media':media,'admin':self.auth(),'needs_setup':setting('password') is None})
+            for p in posts:p['tags']=json.loads(p['tags'])
+            with connect() as c:
+                tags=[r[0] for r in c.execute('SELECT name FROM tags ORDER BY name')]
+            if not self.auth():tags=[tag for tag in tags if any(tag in p['tags'] for p in posts)]
+            return self.respond(200,{'tags':tags,'settings':settings,'posts':posts,'pages':pages,'media':media,'admin':self.auth(),'needs_setup':setting('password') is None})
         if path.startswith('/media/'):
             ident=path.split('/')[-1]
             with connect() as c:
@@ -242,10 +272,24 @@ class Handler(BaseHTTPRequestHandler):
                     with connect() as c:
                         valid={r[0] for r in c.execute('SELECT id FROM media')}
                         if any(x not in valid for x in attachments): raise ValueError('附件不存在')
-                        existing=c.execute('SELECT created FROM posts WHERE id=?',(ident,)).fetchone()
-                        c.execute('INSERT OR REPLACE INTO posts (id,title,body,category,status,created,updated,attachments,format,typography) VALUES (?,?,?,?,?,?,?,?,?,?)',(ident,title,body,category,status,existing[0] if existing else now(),now(),json.dumps(list(dict.fromkeys(attachments))),fmt,style))
+                        existing=c.execute('SELECT created,published_at,tags FROM posts WHERE id=?',(ident,)).fetchone()
+                        published_value=data.get('published_at','')
+                        published_at=publication_time((existing['published_at'] if existing else now()) if published_value=='' else published_value)
+                        tags=clean_tags(data.get('tags',json.loads(existing['tags']) if existing else []))
+                        for tag in tags:c.execute('INSERT OR IGNORE INTO tags(name) VALUES (?)',(tag,))
+                        c.execute('INSERT OR REPLACE INTO posts (id,title,body,category,status,created,updated,attachments,format,typography,published_at,tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',(ident,title,body,category,status,existing['created'] if existing else now(),now(),json.dumps(list(dict.fromkeys(attachments))),fmt,style,published_at,json.dumps(tags,ensure_ascii=False)))
                     return self.respond(200,{'id':ident})
-                if path=='/api/delete-post':
+                if path=='/api/add-tag':
+                    tag=clean_tags([data.get('name')])[0]
+                    with connect() as c:c.execute('INSERT OR IGNORE INTO tags(name) VALUES (?)',(tag,))
+                elif path=='/api/delete-tag':
+                    tag=clean_tags([data.get('name')])[0]
+                    with connect() as c:
+                        c.execute('DELETE FROM tags WHERE name=?',(tag,))
+                        for row in c.execute('SELECT id,tags FROM posts').fetchall():
+                            tags=json.loads(row['tags'])
+                            if tag in tags:c.execute('UPDATE posts SET tags=? WHERE id=?',(json.dumps([x for x in tags if x!=tag],ensure_ascii=False),row['id']))
+                elif path=='/api/delete-post':
                     with connect() as c: c.execute('DELETE FROM posts WHERE id=?',(data.get('id'),))
                 elif path=='/api/delete-media':
                     ident=data.get('id')
@@ -259,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(cats,list) or len(cats)>100 or any(not isinstance(x,str) or not x.strip() or len(x)>80 for x in cats): raise ValueError('类目格式不正确，最多 100 个')
                     if not isinstance(menus,list) or len(menus)>20: raise ValueError('菜单最多 20 项')
                     with connect() as c: page_targets={'page:'+r[0] for r in c.execute('SELECT slug FROM pages')}
-                    targets={'home','blog','archive','media'}|{'category:'+x for x in cats}|page_targets
+                    targets={'home','blog','archive','tags','media'}|{'category:'+x for x in cats}|page_targets
                     for m in menus:
                         if not isinstance(m,dict) or m.get('target') not in targets or not str(m.get('label','')).strip(): raise ValueError('菜单目标需为首页、博客、归档、媒体、现有页面或类目')
                     if 'page_size' in data and (type(data['page_size']) is not int or not 1<=data['page_size']<=60): raise ValueError('每页文章数需为 1 至 60')
