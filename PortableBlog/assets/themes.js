@@ -1,0 +1,14 @@
+/* Built-in offline themes. Applying one updates only appearance settings. */
+function themesPage(){
+ const selected=state.settings.theme||'minimal';
+ $('#admin-content').innerHTML=`<form id="theme-form"><div class="toolbar"><div><h3>主题模板</h3><p class="help">选择模板后点击“应用主题”，前台首页、博客、文章、归档和标签页统一生效。文章排版和菜单内容保留。</p></div><button type="submit" class="primary" id="apply-theme">应用主题</button></div><div class="theme-catalog">${state.themes.map(theme=>`<label class="theme-choice"><input type="radio" name="theme" value="${theme.id}" ${selected===theme.id?'checked':''}><span class="theme-thumbnail thumb-${theme.id}" style="--sample-accent:${theme.accent};--sample-bg:${theme.background}"><span class="sample-nav">JOURNAL <i>Home · Blog</i></span><span class="sample-title">生活，值得记录。</span><span class="sample-grid">${[1,2,3].map(i=>'<span><b></b><em></em><small></small></span>').join('')}</span></span><strong>${esc(theme.name)}</strong><span class="help">${esc(theme.description)}</span><span class="theme-active">${selected===theme.id?'当前使用':'可选模板'}</span></label>`).join('')}</div><section class="panel theme-colors"><h3>模板配色</h3><p class="help">选择其他模板会载入它的默认配色；应用前也可微调。只有点击“应用主题”才会保存。</p><div class="row"><label>主题色<input type="color" id="theme-accent" value="${esc(state.settings.accent)}"></label><label>背景色<input type="color" id="theme-background" value="${esc(state.settings.background)}"></label><button type="button" id="theme-reset-colors">恢复所选模板配色</button></div><p id="theme-message" role="status"></p></section><div class="row"><button type="submit" class="primary">应用主题</button><button type="button" id="theme-view">查看前台</button></div></form>`;
+ function theme(){return state.themes.find(t=>t.id===$('#theme-form input[name=theme]:checked').value)}
+ function resetColors(){const t=theme();$('#theme-accent').value=t.accent;$('#theme-background').value=t.background;dirty=true;updateSample()}
+ function updateSample(){const card=$('#theme-form input[name=theme]:checked').closest('label').querySelector('.theme-thumbnail');card.style.setProperty('--sample-accent',$('#theme-accent').value);card.style.setProperty('--sample-bg',$('#theme-background').value)}
+ $('#theme-form').querySelectorAll('input[name=theme]').forEach(input=>input.onchange=resetColors);
+ for(const id of ['theme-accent','theme-background'])$('#'+id).oninput=()=>{dirty=true;updateSample()};
+ $('#theme-reset-colors').onclick=resetColors;
+ $('#theme-view').onclick=()=>go('blog');
+ $('#theme-form').onsubmit=async event=>{event.preventDefault();const buttons=$('#theme-form').querySelectorAll('button[type=submit]');buttons.forEach(b=>b.disabled=true);try{await api('theme',{theme:theme().id,accent:$('#theme-accent').value,background:$('#theme-background').value});dirty=false;await refresh();themesPage();notice('主题已应用，前台已更新')}catch(error){$('#theme-message').textContent=error.message;buttons.forEach(b=>b.disabled=false)}};
+ updateSample();
+}

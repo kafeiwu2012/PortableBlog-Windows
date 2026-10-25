@@ -13,6 +13,13 @@ MEDIA.mkdir(parents=True, exist_ok=True)
 DB = DATA / 'blog.sqlite3'
 LOCK = threading.RLock()
 SESSIONS = {}
+THEMES = [
+    {'id':'minimal','name':'极简留白','description':'白底、宽留白与三栏图文，延续原有简洁风格。','accent':'#111111','background':'#ffffff'},
+    {'id':'paper','name':'暖纸书卷','description':'米色纸张、宋体标题与单栏文章，适合散文和长篇日记。','accent':'#805233','background':'#f5efdf'},
+    {'id':'forest','name':'森林手记','description':'柔绿背景、圆角双栏卡片，适合旅行与生活影像。','accent':'#285943','background':'#edf4ee'},
+    {'id':'night','name':'深夜阅读','description':'深色背景、暖金点缀与双栏卡片，适合夜间阅读。','accent':'#efc77e','background':'#171b24'},
+    {'id':'magazine','name':'杂志排版','description':'醒目标题、线条分隔与首篇大图布局，适合专题与摄影。','accent':'#b63826','background':'#faf9f6'},
+]
 ALLOWED = {'.jpg','.jpeg','.png','.gif','.webp','.avif','.bmp','.mp4','.webm','.ogg','.mov','.m4v','.mp3','.wav','.pdf','.txt'}
 def connect():
     c = sqlite3.connect(DB, timeout=30)
@@ -34,7 +41,7 @@ CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY,name TEXT NOT NULL,file TEX
             c.execute("UPDATE posts SET published_at=created")
         if 'tags' not in columns:c.execute("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
         c.execute('CREATE TABLE IF NOT EXISTS tags(name TEXT PRIMARY KEY)')
-        defaults={'title':'我的私人博客','subtitle':'欢迎来到我的小小宇宙。','accent':'#111111','background':'#ffffff','categories':['生活记录','学习笔记','旅行'],'menus':[{'label':'Home','target':'home'},{'label':'About','target':'page:about'},{'label':'Blog','target':'blog'},{'label':'Contact','target':'page:contact'},{'label':'旅行','target':'category:旅行'}], 'blog_heading':'欢迎来玩。','footer_text':'记录生活，收藏时光。','page_size':9}
+        defaults={'theme':'minimal','title':'我的私人博客','subtitle':'欢迎来到我的小小宇宙。','accent':'#111111','background':'#ffffff','categories':['生活记录','学习笔记','旅行'],'menus':[{'label':'Home','target':'home'},{'label':'About','target':'page:about'},{'label':'Blog','target':'blog'},{'label':'Contact','target':'page:contact'},{'label':'旅行','target':'category:旅行'}], 'blog_heading':'欢迎来玩。','footer_text':'记录生活，收藏时光。','page_size':9}
         for k,v in defaults.items(): c.execute('INSERT OR IGNORE INTO settings VALUES (?,?)',(k,json.dumps(v,ensure_ascii=False)))
         if not c.execute("SELECT 1 FROM settings WHERE key='_pages_initialized'").fetchone():
             # Upgrade only untouched v1 defaults; custom menus and colors remain intact.
@@ -127,7 +134,7 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as c:
                 tags=[r[0] for r in c.execute('SELECT name FROM tags ORDER BY name')]
             if not self.auth():tags=[tag for tag in tags if any(tag in p['tags'] for p in posts)]
-            return self.respond(200,{'tags':tags,'settings':settings,'posts':posts,'pages':pages,'media':media,'admin':self.auth(),'needs_setup':setting('password') is None})
+            return self.respond(200,{'themes':THEMES,'tags':tags,'settings':settings,'posts':posts,'pages':pages,'media':media,'admin':self.auth(),'needs_setup':setting('password') is None})
         if path.startswith('/media/'):
             ident=path.split('/')[-1]
             with connect() as c:
@@ -279,7 +286,15 @@ class Handler(BaseHTTPRequestHandler):
                         for tag in tags:c.execute('INSERT OR IGNORE INTO tags(name) VALUES (?)',(tag,))
                         c.execute('INSERT OR REPLACE INTO posts (id,title,body,category,status,created,updated,attachments,format,typography,published_at,tags) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',(ident,title,body,category,status,existing['created'] if existing else now(),now(),json.dumps(list(dict.fromkeys(attachments))),fmt,style,published_at,json.dumps(tags,ensure_ascii=False)))
                     return self.respond(200,{'id':ident})
-                if path=='/api/add-tag':
+                if path=='/api/theme':
+                    selected=next((theme for theme in THEMES if theme['id']==data.get('theme')),None)
+                    if selected is None:raise ValueError('请选择有效的主题模板')
+                    colors={key:data.get(key,selected[key]) for key in ('accent','background')}
+                    if any(not isinstance(value,str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',value) for value in colors.values()):raise ValueError('颜色格式不正确')
+                    with connect() as c:
+                        save_setting(c,'theme',selected['id'])
+                        for key,value in colors.items():save_setting(c,key,value)
+                elif path=='/api/add-tag':
                     tag=clean_tags([data.get('name')])[0]
                     with connect() as c:c.execute('INSERT OR IGNORE INTO tags(name) VALUES (?)',(tag,))
                 elif path=='/api/delete-tag':
